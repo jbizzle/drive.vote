@@ -40,12 +40,37 @@ VCR.configure do |config|
   config.cassette_library_dir = "spec/fixtures/vcr_cassettes"
   config.hook_into :webmock # or :fakeweb
 
+  # It's not clear exactly what scheme was used to generate the VCR fixtures, but it appears
+  # that it had something to do with a hashing of request.uri -> file name. In any event, it
+  # seems that this version of the code, or its runtime, has changed in such a way that renders
+  # the hashing incorrect. Instead, we do a one-time scan of all cassette files and map each
+  # cassette according to the URLs it contains in its saved HTTP interactions, and then use that
+  # map below to test whether we have a cassette
+  cassette_files_by_uris = {}
+  Dir.chdir(config.cassette_library_dir) do
+    Dir.glob("*.yml").each do |file|
+      h = File.open(file) { |io| YAML.load io }
+      (h["http_interactions"] || []).each do |interaction|
+        uri = interaction["request"]["uri"]
+        cassette_files_by_uris[uri] = file
+      end
+    end
+  end
+
   config.around_http_request(lambda { |req| req.uri =~ /maps.googleapis.com/ }) do |request|
-    VCR.use_cassette("googleapi_#{OpenSSL::Digest::SHA256.new.digest request.uri}", &request)
+    if file = cassette_files_by_uris[request.uri]
+      VCR.use_cassette(file, &request)
+    else
+      request.proceed # Will fail with details about unmatched URI
+    end
   end
 
   config.around_http_request(lambda { |req| req.uri =~ /nominatim.openstreetmap.org/ }) do |request|
-    VCR.use_cassette("openstreetsmap#{OpenSSL::Digest::SHA256.new.digest request.uri}", &request)
+    if file = cassette_files_by_uris[request.uri]
+      VCR.use_cassette(file, &request)
+    else
+      request.proceed # Will fail with details about unmatched URI
+    end
   end
 end
 
